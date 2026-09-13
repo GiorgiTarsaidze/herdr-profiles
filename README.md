@@ -5,6 +5,8 @@
 Chrome-style profiles for [Herdr](https://herdr.dev).<br>
 Keep work, personal and study spaces apart, and switch between them from a popup.
 
+<img src="https://raw.githubusercontent.com/GiorgiTarsaidze/herdr-profiles/assets/demo.gif" alt="Opening a profile from the herdr-profiles popup" width="820">
+
 </div>
 
 ## What it does
