@@ -1,0 +1,46 @@
+id = "herdr-profiles"
+name = "Profiles"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Chrome-style profiles for Herdr. Each profile is an isolated set of spaces (a Herdr named session) with a popup chooser."
+platforms = ["linux", "macos"]
+
+# Installs bin/herdr-profiles (prebuilt release, or `cargo build` when Rust is
+# present) and binds the chooser to a free key in config.toml.
+[[build]]
+command = ["sh", "scripts/install.sh"]
+
+# Runs once when a Herdr server starts. In the default session it opens the
+# chooser popup, but only when at least one profile exists.
+[[startup]]
+command = ["./bin/herdr-profiles", "startup"]
+
+[[actions]]
+id = "choose"
+title = "Profiles: choose"
+description = "Open the profile chooser popup"
+contexts = ["global"]
+command = ["./bin/herdr-profiles", "open-chooser"]
+
+[[actions]]
+id = "setup"
+title = "Profiles: set hotkey"
+description = "Pick the key that opens the profile chooser"
+contexts = ["global"]
+command = ["./bin/herdr-profiles", "open-chooser", "--setup"]
+
+[[panes]]
+id = "chooser"
+title = "Profiles"
+placement = "popup"
+width = 72
+height = 16
+command = ["./bin/herdr-profiles", "chooser"]
+
+[[panes]]
+id = "setup"
+title = "Profiles: hotkey"
+placement = "popup"
+width = 72
+height = 16
+command = ["./bin/herdr-profiles", "chooser", "--setup"]
