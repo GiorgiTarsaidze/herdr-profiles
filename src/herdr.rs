@@ -61,12 +61,11 @@ impl Herdr {
         self.config_dir.join("config.toml")
     }
 
-    pub fn session_dir(&self, profile: &ProfileRef) -> PathBuf {
+    pub fn session_dir(&self, profile: &ProfileRef) -> Option<PathBuf> {
         match profile {
-            ProfileRef::Default => self.config_dir.clone(),
-            ProfileRef::Named(name) => self.config_dir.join("sessions").join(name.as_str()),
-            // ponytail: remote sessions live on the host; this path never exists locally.
-            ProfileRef::Remote { name, .. } => self.config_dir.join("remote").join(name.as_str()),
+            ProfileRef::Default => Some(self.config_dir.clone()),
+            ProfileRef::Named(name) => Some(self.config_dir.join("sessions").join(name.as_str())),
+            ProfileRef::Remote { .. } => None,
         }
     }
 
@@ -297,12 +296,12 @@ pts/10   herdr --remote workbox --unknown-flag
         };
         assert_eq!(
             herdr.session_dir(&ProfileRef::Default),
-            PathBuf::from("/cfg/herdr")
+            Some(PathBuf::from("/cfg/herdr"))
         );
         let work = ProfileRef::parse("work").unwrap();
         assert_eq!(
             herdr.session_dir(&work),
-            PathBuf::from("/cfg/herdr/sessions/work")
+            Some(PathBuf::from("/cfg/herdr/sessions/work"))
         );
         assert_eq!(herdr.config_path(), PathBuf::from("/cfg/herdr/config.toml"));
         let remote = ProfileRef::Remote {
@@ -310,6 +309,6 @@ pts/10   herdr --remote workbox --unknown-flag
             target: "workbox".into(),
             session: None,
         };
-        assert!(!herdr.session_dir(&remote).exists());
+        assert_eq!(herdr.session_dir(&remote), None);
     }
 }
