@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -9,7 +10,7 @@ use crate::keybinding::{self, KeyCombo};
 use crate::launcher;
 use crate::popup::{self, Entrypoint};
 use crate::profiles::ProfileStore;
-use crate::settings::ProfileRef;
+use crate::settings::{ProfileRef, Settings};
 use crate::ui;
 
 const STARTUP_RETRIES: u32 = 60;
@@ -72,6 +73,9 @@ enum Command {
     /// Run a command with a profile's environment (used by profile windows)
     #[command(hide = true)]
     Exec {
+        /// profiles.json to read the environment from
+        #[arg(long)]
+        settings: PathBuf,
         name: String,
         #[arg(last = true, required = true)]
         command: Vec<String>,
@@ -114,8 +118,12 @@ impl Cli {
                 println!("removed profile '{name}'");
                 Ok(())
             }
-            Command::Exec { name, command } => {
-                let env = store.settings().profile_env(&ProfileRef::parse(&name)?);
+            Command::Exec {
+                settings,
+                name,
+                command,
+            } => {
+                let env = Settings::read(&settings)?.profile_env(&ProfileRef::parse(&name)?);
                 launcher::exec(&command, env)
             }
         }

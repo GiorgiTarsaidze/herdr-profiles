@@ -122,12 +122,15 @@ impl<'a> Launcher<'a> {
         }
     }
 
-    /// Runs Herdr through `<exe> exec <profile> --`, which sets the profile's
-    /// environment inside the new window.
-    pub fn through_exec(mut self, exe: &Path, target: &ProfileRef) -> Self {
+    /// Runs Herdr through `<exe> exec --settings <file> <profile> --`, which
+    /// sets the profile's environment inside the new window. The settings path
+    /// is explicit because the window does not get Herdr's plugin variables.
+    pub fn through_exec(mut self, exe: &Path, settings: &Path, target: &ProfileRef) -> Self {
         self.exec_prefix = vec![
             exe.to_string_lossy().into_owned(),
             "exec".to_owned(),
+            "--settings".to_owned(),
+            settings.to_string_lossy().into_owned(),
             target.name().to_owned(),
             "--".to_owned(),
         ];
@@ -135,24 +138,27 @@ impl<'a> Launcher<'a> {
     }
 
     pub fn argv(&self, target: &ProfileRef) -> Option<Vec<String>> {
-        let title = format!("herdr · {target}");
         let mut herdr = self.exec_prefix.clone();
         herdr.push(self.herdr_bin.to_string_lossy().into_owned());
         herdr.extend(target.session_args());
+        self.window_argv(&format!("herdr · {target}"), herdr)
+    }
 
+    /// Wraps `command` so it runs in a new terminal window titled `title`.
+    pub fn window_argv(&self, title: &str, command: Vec<String>) -> Option<Vec<String>> {
         if let Some(prefix) = self.terminal_override.filter(|prefix| !prefix.is_empty()) {
             let mut argv: Vec<String> = prefix
                 .iter()
-                .map(|part| part.replace("{title}", &title))
+                .map(|part| part.replace("{title}", title))
                 .collect();
-            argv.extend(herdr);
+            argv.extend(command);
             return Some(argv);
         }
         match self.platform {
-            Platform::MacOs => Some(macos_argv(&herdr, self.macos_app())),
+            Platform::MacOs => Some(macos_argv(&command, self.macos_app())),
             Platform::Linux => {
-                let mut argv = self.detect_terminal(&title)?;
-                argv.extend(herdr);
+                let mut argv = self.detect_terminal(title)?;
+                argv.extend(command);
                 Some(argv)
             }
         }
@@ -173,13 +179,56 @@ impl<'a> Launcher<'a> {
                 .is_some_and(|hint| self.env.get(hint).is_some_and(|v| !v.is_empty()))
                 && (self.installed)(terminal.binary)
         });
-        let terminal = hinted.or_else(|| {
-            TERMINALS
-                .iter()
-                .find(|terminal| (self.installed)(terminal.binary))
-        })?;
+        if let Some(terminal) = hinted {
+            return Some((terminal.argv)(title));
+        }
+        if let Some(argv) = self.windows_terminal(title) {
+            return Some(argv);
+        }
+        let terminal = TERMINALS
+            .iter()
+            .find(|terminal| (self.installed)(terminal.binary))?;
         Some((terminal.argv)(title))
     }
+
+    /// Herdr inside WSL usually runs in Windows Terminal, which leaves no trace
+    /// in the Linux environment; open a tab there in the same distribution.
+    /// The fixed title stops the shell inside from renaming the tab, and the
+    /// login shell reads ~/.profile, which is where ~/.local/bin joins PATH.
+    fn windows_terminal(&self, title: &str) -> Option<Vec<String>> {
+        let distro = self.env.get("WSL_DISTRO_NAME").filter(|d| !d.is_empty())?;
+        (self.installed)("wt.exe").then(|| {
+            args(&[
+                "wt.exe",
+                "-w",
+                "0",
+                "new-tab",
+                "--title",
+                title,
+                "--suppressApplicationTitle",
+                "wsl.exe",
+                "-d",
+                distro,
+                "--shell-type",
+                "login",
+                "--",
+            ])
+        })
+    }
+}
+
+/// `$VISUAL`, then `$EDITOR`, then nano or vi, as an argv prefix.
+// ponytail: the variable is split on whitespace, no shell quoting support.
+pub fn editor() -> Vec<String> {
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let fallback = if is_on_path("nano") { "nano" } else { "vi" };
+            fallback.to_owned()
+        });
+    editor.split_whitespace().map(str::to_owned).collect()
 }
 
 fn macos_argv(command: &[String], app: &str) -> Vec<String> {
@@ -368,11 +417,61 @@ mod tests {
     }
 
     #[test]
+    fn wsl_opens_a_windows_terminal_tab() {
+        let wsl = env(&[("WSL_DISTRO_NAME", "Ubuntu")]);
+        let has = installed(&["wt.exe", "foot"]);
+        let launcher = Launcher::new(Path::new("/opt/herdr"), None, &wsl, Platform::Linux, &has);
+        assert_eq!(
+            launcher.argv(&work()).unwrap(),
+            [
+                "wt.exe",
+                "-w",
+                "0",
+                "new-tab",
+                "--title",
+                "herdr · work",
+                "--suppressApplicationTitle",
+                "wsl.exe",
+                "-d",
+                "Ubuntu",
+                "--shell-type",
+                "login",
+                "--",
+                "/opt/herdr",
+                "--session",
+                "work"
+            ]
+        );
+        let in_foot = env(&[("WSL_DISTRO_NAME", "Ubuntu"), ("FOOT_PID", "1")]);
+        let launcher = Launcher::new(
+            Path::new("/opt/herdr"),
+            None,
+            &in_foot,
+            Platform::Linux,
+            &has,
+        );
+        assert_eq!(launcher.argv(&work()).unwrap()[0], "foot");
+        let outside_wsl = env(&[]);
+        let launcher = Launcher::new(
+            Path::new("/opt/herdr"),
+            None,
+            &outside_wsl,
+            Platform::Linux,
+            &has,
+        );
+        assert_eq!(launcher.argv(&work()).unwrap()[0], "foot");
+    }
+
+    #[test]
     fn profile_env_runs_through_exec() {
         let env = env(&[]);
         let has = installed(&["xterm"]);
         let launcher = Launcher::new(Path::new("/opt/herdr"), None, &env, Platform::Linux, &has)
-            .through_exec(Path::new("/opt/herdr-profiles"), &work());
+            .through_exec(
+                Path::new("/opt/herdr-profiles"),
+                Path::new("/cfg/profiles.json"),
+                &work(),
+            );
         assert_eq!(
             launcher.argv(&work()).unwrap(),
             [
@@ -382,6 +481,8 @@ mod tests {
                 "-e",
                 "/opt/herdr-profiles",
                 "exec",
+                "--settings",
+                "/cfg/profiles.json",
                 "work",
                 "--",
                 "/opt/herdr",

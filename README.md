@@ -35,6 +35,7 @@ Press `ctrl+b`, then `a`.
 | `↑` `↓`       | move                                          |
 | `enter`       | open the profile in a new window              |
 | `n`           | new profile                                   |
+| `e`           | edit `profiles.json` in `$EDITOR`, new window |
 | `s`           | change the hotkey                             |
 | `x`           | stop a running profile                        |
 | `d`           | delete a stopped profile                      |
@@ -91,7 +92,7 @@ credential helper or a shell file with restricted permissions, not here.
 Set `chooser_on_launch` to `false` to stop the popup at startup.
 Set `terminal` to pick the terminal that opens new windows, for example
 `["kitty", "--title", "{title}"]`. By default the plugin uses the terminal
-Herdr runs in.
+Herdr runs in; inside WSL that is a new Windows Terminal tab.
 
 ## Notes
 

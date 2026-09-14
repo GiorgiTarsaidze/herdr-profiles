@@ -154,13 +154,24 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
-            .ok()
-            .and_then(|data| serde_json::from_slice(&data).ok())
-            .unwrap_or_default()
+        Self::read(path).unwrap_or_default()
     }
 
+    /// Like `load`, but reports a missing or broken file instead of hiding it.
+    pub fn read(path: &Path) -> Result<Self> {
+        let data = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        serde_json::from_slice(&data).with_context(|| format!("{} is invalid", path.display()))
+    }
+
+    /// Refuses to replace a file that does not parse: this struct would have
+    /// loaded as defaults from it, and saving would drop every profile.
     pub fn save(&self, path: &Path) -> Result<()> {
+        if path.exists() && Self::read(path).is_err() {
+            bail!(
+                "{} is invalid; fix it (e in the popup) before changing profiles",
+                path.display()
+            );
+        }
         let mut data = serde_json::to_vec_pretty(self)?;
         data.push(b'\n');
         write_atomically(path, &data)
@@ -269,6 +280,9 @@ mod tests {
         assert!(loaded.chooser_on_launch);
         fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+        assert!(Settings::read(&path).is_err());
+        assert!(Settings::default().save(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{not json");
     }
 
     #[test]
