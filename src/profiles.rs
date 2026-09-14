@@ -158,7 +158,11 @@ impl<'a> ProfileStore<'a> {
             bail!("profile '{name}' already exists");
         }
         let label = label.filter(|l| !l.is_empty() && l != name.as_str());
-        self.settings.profiles.push(Profile { name, label });
+        self.settings.profiles.push(Profile {
+            name,
+            label,
+            env: Default::default(),
+        });
         self.settings.save(&self.path)
     }
 
@@ -220,7 +224,15 @@ impl<'a> ProfileStore<'a> {
         if dry_run {
             return Ok(argv);
         }
-        launcher::spawn_detached(&argv)?;
+        let profile_env = match target {
+            ProfileRef::Default => Vec::new(),
+            ProfileRef::Named(name) => self
+                .settings
+                .profile(name)
+                .map(Profile::window_env)
+                .unwrap_or_default(),
+        };
+        launcher::spawn_detached(&argv, profile_env)?;
         self.settings.last = Some(target.name().to_owned());
         self.settings.save(&self.path)?;
         Ok(argv)

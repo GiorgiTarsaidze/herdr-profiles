@@ -215,7 +215,8 @@ pub fn is_on_path(binary: &str) -> bool {
 }
 
 /// Starts the window detached from the popup, so closing the popup never kills it.
-pub fn spawn_detached(argv: &[String]) -> Result<()> {
+/// `profile_env` is layered on top of the inherited environment.
+pub fn spawn_detached(argv: &[String], profile_env: Vec<(String, String)>) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let (program, rest) = argv.split_first().context("empty launch command")?;
@@ -223,6 +224,7 @@ pub fn spawn_detached(argv: &[String]) -> Result<()> {
         .args(rest)
         .env_clear()
         .envs(window_env())
+        .envs(profile_env)
         .current_dir(crate::settings::home_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

@@ -55,6 +55,39 @@ A profile that already has a window open cannot be opened twice.
 }
 ```
 
+A profile can carry its own environment. It is set for the profile's window,
+so everything started inside it sees it — for example a separate Claude Code
+account per profile:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "vertex",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-vertex",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLOUD_ML_REGION": "us-east5",
+        "ANTHROPIC_VERTEX_PROJECT_ID": "my-project"
+      }
+    },
+    {
+      "name": "router",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-router",
+        "ANTHROPIC_BASE_URL": "https://router.example.com"
+      }
+    }
+  ]
+}
+```
+
+A leading `~` is expanded. The environment applies when the profile's
+session starts, so stop a running profile (`x`) before changing it.
+The file is plain text: keep tokens in a credential helper or a shell file
+with restricted permissions, not here. On macOS, Terminal and iTerm do not
+pass it on to the new window.
+
 Set `chooser_on_launch` to `false` to stop the popup at startup.
 Set `terminal` to pick the terminal that opens new windows, for example
 `["kitty", "--title", "{title}"]`. By default the plugin uses the terminal
