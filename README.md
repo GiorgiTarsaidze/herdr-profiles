@@ -82,11 +82,11 @@ account per profile:
 }
 ```
 
-A leading `~` is expanded. The environment applies when the profile's
-session starts, so stop a running profile (`x`) before changing it.
-The file is plain text: keep tokens in a credential helper or a shell file
-with restricted permissions, not here. On macOS, Terminal and iTerm do not
-pass it on to the new window.
+A leading `~` is expanded. The window starts through `herdr-profiles exec`,
+which sets the environment before running Herdr, so it works with any
+terminal. It applies when the profile's session starts, so stop a running
+profile (`x`) before changing it. The file is plain text: keep tokens in a
+credential helper or a shell file with restricted permissions, not here.
 
 Set `chooser_on_launch` to `false` to stop the popup at startup.
 Set `terminal` to pick the terminal that opens new windows, for example

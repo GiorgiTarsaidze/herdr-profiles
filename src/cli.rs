@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 use crate::herdr::Herdr;
 use crate::keybinding::{self, KeyCombo};
+use crate::launcher;
 use crate::popup::{self, Entrypoint};
 use crate::profiles::ProfileStore;
 use crate::settings::ProfileRef;
@@ -68,6 +69,13 @@ enum Command {
     Stop { name: String },
     /// Delete a stopped profile and its saved spaces
     Remove { name: String },
+    /// Run a command with a profile's environment (used by profile windows)
+    #[command(hide = true)]
+    Exec {
+        name: String,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 impl Cli {
@@ -105,6 +113,10 @@ impl Cli {
                 store.remove(&ProfileRef::parse(&name)?)?;
                 println!("removed profile '{name}'");
                 Ok(())
+            }
+            Command::Exec { name, command } => {
+                let env = store.settings().profile_env(&ProfileRef::parse(&name)?);
+                launcher::exec(&command, env)
             }
         }
     }

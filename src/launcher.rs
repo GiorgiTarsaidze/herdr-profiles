@@ -101,6 +101,7 @@ pub struct Launcher<'a> {
     env: &'a HashMap<String, String>,
     platform: Platform,
     installed: &'a dyn Fn(&str) -> bool,
+    exec_prefix: Vec<String>,
 }
 
 impl<'a> Launcher<'a> {
@@ -117,12 +118,26 @@ impl<'a> Launcher<'a> {
             env,
             platform,
             installed,
+            exec_prefix: Vec::new(),
         }
+    }
+
+    /// Runs Herdr through `<exe> exec <profile> --`, which sets the profile's
+    /// environment inside the new window.
+    pub fn through_exec(mut self, exe: &Path, target: &ProfileRef) -> Self {
+        self.exec_prefix = vec![
+            exe.to_string_lossy().into_owned(),
+            "exec".to_owned(),
+            target.name().to_owned(),
+            "--".to_owned(),
+        ];
+        self
     }
 
     pub fn argv(&self, target: &ProfileRef) -> Option<Vec<String>> {
         let title = format!("herdr · {target}");
-        let mut herdr = vec![self.herdr_bin.to_string_lossy().into_owned()];
+        let mut herdr = self.exec_prefix.clone();
+        herdr.push(self.herdr_bin.to_string_lossy().into_owned());
         herdr.extend(target.session_args());
 
         if let Some(prefix) = self.terminal_override.filter(|prefix| !prefix.is_empty()) {
@@ -214,9 +229,18 @@ pub fn is_on_path(binary: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
 }
 
+/// Replaces this process with `command`, adding `env` to the environment.
+/// Only returns on failure.
+pub fn exec(command: &[String], env: Vec<(String, String)>) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let (program, rest) = command.split_first().context("empty command")?;
+    let err = Command::new(program).args(rest).envs(env).exec();
+    Err(err).with_context(|| format!("starting {program}"))
+}
+
 /// Starts the window detached from the popup, so closing the popup never kills it.
-/// `profile_env` is layered on top of the inherited environment.
-pub fn spawn_detached(argv: &[String], profile_env: Vec<(String, String)>) -> Result<()> {
+pub fn spawn_detached(argv: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let (program, rest) = argv.split_first().context("empty launch command")?;
@@ -224,7 +248,6 @@ pub fn spawn_detached(argv: &[String], profile_env: Vec<(String, String)>) -> Re
         .args(rest)
         .env_clear()
         .envs(window_env())
-        .envs(profile_env)
         .current_dir(crate::settings::home_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -341,6 +364,30 @@ mod tests {
         assert_eq!(
             argv[2],
             "tell application \"Terminal\" to do script \"/opt/herdr --session work\""
+        );
+    }
+
+    #[test]
+    fn profile_env_runs_through_exec() {
+        let env = env(&[]);
+        let has = installed(&["xterm"]);
+        let launcher = Launcher::new(Path::new("/opt/herdr"), None, &env, Platform::Linux, &has)
+            .through_exec(Path::new("/opt/herdr-profiles"), &work());
+        assert_eq!(
+            launcher.argv(&work()).unwrap(),
+            [
+                "xterm",
+                "-T",
+                "herdr · work",
+                "-e",
+                "/opt/herdr-profiles",
+                "exec",
+                "work",
+                "--",
+                "/opt/herdr",
+                "--session",
+                "work"
+            ]
         );
     }
 }

@@ -169,6 +169,17 @@ impl Settings {
     pub fn profile(&self, name: &ProfileName) -> Option<&Profile> {
         self.profiles.iter().find(|p| &p.name == name)
     }
+
+    /// The extra environment a profile's window runs with; empty for `default`.
+    pub fn profile_env(&self, target: &ProfileRef) -> Vec<(String, String)> {
+        match target {
+            ProfileRef::Default => Vec::new(),
+            ProfileRef::Named(name) => self
+                .profile(name)
+                .map(Profile::window_env)
+                .unwrap_or_default(),
+        }
+    }
 }
 
 pub fn write_atomically(path: &Path, data: &[u8]) -> Result<()> {
@@ -270,7 +281,12 @@ mod tests {
         let values: Vec<String> = profile.window_env().into_iter().map(|(_, v)| v).collect();
         assert_eq!(
             values,
-            [format!("{home}/.claude-vertex"), home, "x~/y".into(), "~bob".into()]
+            [
+                format!("{home}/.claude-vertex"),
+                home,
+                "x~/y".into(),
+                "~bob".into()
+            ]
         );
     }
 
