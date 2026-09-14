@@ -8,7 +8,6 @@ use crate::herdr::Herdr;
 use crate::keybinding::{self, KeyCombo};
 use crate::popup::{self, Entrypoint};
 use crate::profiles::ProfileStore;
-use crate::settings::ProfileRef;
 use crate::ui;
 
 const STARTUP_RETRIES: u32 = 60;
@@ -57,7 +56,16 @@ enum Command {
         json: bool,
     },
     /// Create a profile
-    Add { name: String, label: Option<String> },
+    Add {
+        name: String,
+        label: Option<String>,
+        /// SSH target: the profile opens `herdr --remote <TARGET>`
+        #[arg(long, value_name = "TARGET")]
+        remote: Option<String>,
+        /// Named session on the remote host
+        #[arg(long, value_name = "NAME", requires = "remote")]
+        remote_session: Option<String>,
+    },
     /// Open a profile in a new terminal window
     Open {
         name: String,
@@ -87,22 +95,27 @@ impl Cli {
             }
             Command::Setup { key, print, force } => setup(&herdr, key, print, force),
             Command::List { json } => list(&store, json),
-            Command::Add { name, label } => {
-                store.add(&name, label)?;
+            Command::Add {
+                name,
+                label,
+                remote,
+                remote_session,
+            } => {
+                store.add(&name, label, remote, remote_session)?;
                 println!("created profile '{name}'");
                 Ok(())
             }
             Command::Open { name, dry_run } => {
-                let target = ProfileRef::parse(&name)?;
+                let target = store.resolve(&name)?;
                 let argv = store.open(&target, dry_run)?;
                 if dry_run {
                     println!("{}", argv.join(" "));
                 }
                 Ok(())
             }
-            Command::Stop { name } => store.stop(&ProfileRef::parse(&name)?),
+            Command::Stop { name } => store.stop(&store.resolve(&name)?),
             Command::Remove { name } => {
-                store.remove(&ProfileRef::parse(&name)?)?;
+                store.remove(&store.resolve(&name)?)?;
                 println!("removed profile '{name}'");
                 Ok(())
             }
@@ -120,14 +133,15 @@ fn list(store: &ProfileStore, json: bool) -> Result<()> {
     }
     for row in rows {
         let here = if row.current { "  (this window)" } else { "" };
-        let plural = if row.spaces == 1 { "" } else { "s" };
-        writeln!(
-            out,
-            "{:<20} {:<8} {} space{plural}{here}",
-            row.name(),
-            row.state(),
-            row.spaces
-        )?;
+        let detail = match &row.remote {
+            Some(remote) => remote.clone(),
+            None => format!(
+                "{} space{}",
+                row.spaces,
+                if row.spaces == 1 { "" } else { "s" }
+            ),
+        };
+        writeln!(out, "{:<20} {:<8} {detail}{here}", row.name(), row.state())?;
     }
     Ok(())
 }

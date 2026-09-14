@@ -12,8 +12,9 @@ Keep work, personal and study spaces apart, and switch between them from a popup
 ## What it does
 
 A profile is a Herdr named session: its own spaces, agents and saved layout.
-This plugin lists your profiles in a popup and opens the one you pick in a new
-terminal window. When Herdr starts and you have at least one profile, the popup
+A profile can also point at a Herdr server on another machine, opened with
+`herdr --remote`. This plugin lists your profiles in a popup and opens the one
+you pick in a new terminal window. When Herdr starts and you have at least one profile, the popup
 appears on its own, like Chrome's profile picker.
 
 ## Install
@@ -34,7 +35,7 @@ Press `ctrl+b`, then `a`.
 | ------------- | --------------------------------------------- |
 | `↑` `↓`       | move                                          |
 | `enter`       | open the profile in a new window              |
-| `n`           | new profile                                   |
+| `n`           | new profile (leave the SSH target empty for a local one) |
 | `s`           | change the hotkey                             |
 | `x`           | stop a running profile                        |
 | `d`           | delete a stopped profile                      |
@@ -42,6 +43,14 @@ Press `ctrl+b`, then `a`.
 
 `default` is Herdr's own session. It is always listed and cannot be deleted.
 A profile that already has a window open cannot be opened twice.
+
+Remote profiles show their `host/session` instead of a space count, since that
+would need an SSH round trip. `x` does nothing for them and `d` only forgets the
+profile; the host keeps its session. From the shell:
+
+```sh
+herdr-profiles add box "Build box" --remote workbox --remote-session agents
+```
 
 ## Settings
 
@@ -51,9 +60,15 @@ A profile that already has a window open cannot be opened twice.
 {
   "chooser_on_launch": true,
   "terminal": null,
-  "profiles": [{ "name": "work", "label": "Work" }]
+  "profiles": [
+    { "name": "work", "label": "Work" },
+    { "name": "box", "label": "Build box", "remote": "workbox", "remote_session": "agents" }
+  ]
 }
 ```
+
+`remote` is any `ssh` target (`workbox`, `ssh://you@server:2222`);
+`remote_session` picks a named session on that host and is optional.
 
 Set `chooser_on_launch` to `false` to stop the popup at startup.
 Set `terminal` to pick the terminal that opens new windows, for example

@@ -23,6 +23,8 @@ pub struct ProfileRow {
     pub protected: bool,
     pub spaces: usize,
     pub blocked: usize,
+    /// `target` or `target/session` of a remote profile.
+    pub remote: Option<String>,
 }
 
 impl ProfileRow {
@@ -31,10 +33,11 @@ impl ProfileRow {
     }
 
     pub fn state(&self) -> &'static str {
-        match (self.attached, self.running) {
-            (true, _) => "open",
-            (false, true) => "running",
-            (false, false) => "stopped",
+        match (self.attached, self.running, self.remote.is_some()) {
+            (true, _, _) => "open",
+            (false, _, true) => "remote",
+            (false, true, _) => "running",
+            (false, false, _) => "stopped",
         }
     }
 }
@@ -78,12 +81,7 @@ impl<'a> ProfileStore<'a> {
         with_counts: bool,
     ) -> Vec<ProfileRow> {
         let mut order = vec![ProfileRef::Default];
-        order.extend(
-            self.settings
-                .profiles
-                .iter()
-                .map(|p| ProfileRef::Named(p.name.clone())),
-        );
+        order.extend(self.settings.profiles.iter().map(Profile::to_ref));
         let mut adopted: Vec<ProfileName> = sessions
             .iter()
             .filter(|s| !herdr::is_default_session(s))
@@ -108,6 +106,7 @@ impl<'a> ProfileStore<'a> {
         let session = sessions.iter().find(|s| match &id {
             ProfileRef::Default => herdr::is_default_session(s),
             ProfileRef::Named(name) => s.name == name.as_str(),
+            ProfileRef::Remote { .. } => false,
         });
         let session_dir = session
             .and_then(|s| s.session_dir.clone())
@@ -116,14 +115,25 @@ impl<'a> ProfileStore<'a> {
             .and_then(|s| s.socket_path.clone())
             .unwrap_or_else(|| session_dir.join("herdr.sock"));
         let running = session.is_some_and(|s| s.running);
-        let attached = attached.contains(id.name());
+        let attached = attached.contains(&id.attach_key());
         let label = match &id {
             ProfileRef::Default => id.name().to_owned(),
-            ProfileRef::Named(name) => self
+            ProfileRef::Named(name) | ProfileRef::Remote { name, .. } => self
                 .settings
                 .profile(name)
                 .map_or_else(|| name.to_string(), |p| p.label().to_owned()),
         };
+        let remote = match &id {
+            ProfileRef::Remote {
+                target, session, ..
+            } => Some(match session {
+                Some(session) => format!("{target}/{session}"),
+                None => target.clone(),
+            }),
+            _ => None,
+        };
+        // ponytail: no counts for remote profiles, that would mean an SSH round trip.
+        let with_counts = with_counts && remote.is_none();
         let counts = match (with_counts, running) {
             (false, _) => None,
             (true, true) => herdr::live_counts(&socket_path),
@@ -148,17 +158,43 @@ impl<'a> ProfileStore<'a> {
             protected: id.is_default(),
             spaces: counts.spaces,
             blocked: counts.blocked,
+            remote,
             id,
         }
     }
 
-    pub fn add(&mut self, name: &str, label: Option<String>) -> Result<()> {
+    /// A profile by name: a saved one (local or remote), or a plain session name.
+    pub fn resolve(&self, name: &str) -> Result<ProfileRef> {
+        let id = ProfileRef::parse(name)?;
+        let ProfileRef::Named(name) = &id else {
+            return Ok(id);
+        };
+        Ok(self
+            .settings
+            .profile(name)
+            .map_or(id.clone(), Profile::to_ref))
+    }
+
+    pub fn add(
+        &mut self,
+        name: &str,
+        label: Option<String>,
+        remote: Option<String>,
+        remote_session: Option<String>,
+    ) -> Result<()> {
         let name: ProfileName = name.parse()?;
         if self.settings.profile(&name).is_some() {
             bail!("profile '{name}' already exists");
         }
         let label = label.filter(|l| !l.is_empty() && l != name.as_str());
-        self.settings.profiles.push(Profile { name, label });
+        let remote = remote.filter(|t| !t.is_empty());
+        let remote_session = remote_session.filter(|s| !s.is_empty() && remote.is_some());
+        self.settings.profiles.push(Profile {
+            name,
+            label,
+            remote,
+            remote_session,
+        });
         self.settings.save(&self.path)
     }
 
@@ -167,18 +203,23 @@ impl<'a> ProfileStore<'a> {
     }
 
     fn remove_with(&mut self, target: &ProfileRef, sessions: &[Session]) -> Result<()> {
-        let ProfileRef::Named(name) = target else {
-            bail!("the default profile cannot be deleted");
+        let name = match target {
+            ProfileRef::Default => bail!("the default profile cannot be deleted"),
+            // Only forgets the profile; the host keeps its session.
+            ProfileRef::Remote { name, .. } => name,
+            ProfileRef::Named(name) => {
+                if sessions
+                    .iter()
+                    .any(|s| s.name == name.as_str() && s.running)
+                {
+                    bail!("profile '{name}' is running; stop it first");
+                }
+                if self.herdr.session_dir(target).is_dir() {
+                    self.herdr.delete_session(name)?;
+                }
+                name
+            }
         };
-        if sessions
-            .iter()
-            .any(|s| s.name == name.as_str() && s.running)
-        {
-            bail!("profile '{name}' is running; stop it first");
-        }
-        if self.herdr.session_dir(target).is_dir() {
-            self.herdr.delete_session(name)?;
-        }
         self.settings.profiles.retain(|p| &p.name != name);
         if self.settings.last.as_deref() == Some(name.as_str()) {
             self.settings.last = None;
@@ -192,12 +233,15 @@ impl<'a> ProfileStore<'a> {
                 bail!("the default profile is Herdr itself; use `herdr server stop`")
             }
             ProfileRef::Named(name) => self.herdr.stop_session(name),
+            ProfileRef::Remote { target, .. } => {
+                bail!("'{target}' is a remote host; stop the session there")
+            }
         }
     }
 
     /// Opens the profile in a new terminal window and remembers it as the last used.
     pub fn open(&mut self, target: &ProfileRef, dry_run: bool) -> Result<Vec<String>> {
-        if herdr::attached_sessions().contains(target.name()) {
+        if herdr::attached_sessions().contains(&target.attach_key()) {
             if target == &self.current {
                 bail!("'{target}' is this window");
             }
@@ -247,7 +291,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let herdr = Herdr::from_env();
         let mut store = store(dir.path(), &herdr);
-        store.add("work", Some("Work".into())).unwrap();
+        store.add("work", Some("Work".into()), None, None).unwrap();
+        store
+            .add("box", None, Some("workbox".into()), Some("agents".into()))
+            .unwrap();
         let study_dir = dir.path().join("study");
         fs::create_dir_all(&study_dir).unwrap();
         fs::write(
@@ -271,14 +318,25 @@ mod tests {
         let attached = HashSet::from(["study".to_owned()]);
         let rows = store.rows_with(&sessions, &attached, true);
         let names: Vec<&str> = rows.iter().map(ProfileRow::name).collect();
-        assert_eq!(names, ["default", "work", "study"]);
+        assert_eq!(names, ["default", "work", "box", "study"]);
         assert!(rows[0].protected && rows[0].running && rows[0].current);
         assert_eq!(
-            (rows[0].state(), rows[1].state(), rows[2].state()),
-            ("running", "stopped", "open")
+            (
+                rows[0].state(),
+                rows[1].state(),
+                rows[2].state(),
+                rows[3].state()
+            ),
+            ("running", "stopped", "remote", "open")
         );
         assert_eq!((rows[1].label.as_str(), rows[1].protected), ("Work", false));
-        assert_eq!((rows[2].spaces, rows[2].running), (2, false));
+        assert_eq!(rows[2].remote.as_deref(), Some("workbox/agents"));
+        assert_eq!((rows[3].spaces, rows[3].running), (2, false));
+        let attached = HashSet::from(["workbox#agents".to_owned()]);
+        assert_eq!(
+            store.rows_with(&sessions, &attached, false)[2].state(),
+            "open"
+        );
     }
 
     #[test]
@@ -286,10 +344,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let herdr = Herdr::from_env();
         let mut store = store(dir.path(), &herdr);
-        store.add("work", None).unwrap();
-        assert!(store.add("work", None).is_err());
-        assert!(store.add("bad name", None).is_err());
-        assert!(store.add("default", None).is_err());
+        store.add("work", None, None, None).unwrap();
+        assert!(store.add("work", None, None, None).is_err());
+        assert!(store.add("bad name", None, None, None).is_err());
+        assert!(store.add("default", None, None, None).is_err());
         let reloaded = Settings::load(&dir.path().join("profiles.json"));
         assert_eq!(reloaded.profiles.len(), 1);
         assert_eq!(reloaded.profiles[0].label(), "work");
@@ -300,8 +358,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let herdr = Herdr::from_env();
         let mut store = store(dir.path(), &herdr);
-        store.add("work", None).unwrap();
+        store.add("work", None, None, None).unwrap();
+        store
+            .add("box", None, Some("workbox".into()), None)
+            .unwrap();
         let work = ProfileRef::parse("work").unwrap();
+        let remote = store.resolve("box").unwrap();
+        assert_eq!(remote.session_args(), ["--remote", "workbox"]);
+        assert!(store.stop(&remote).is_err());
+        store.remove_with(&remote, &[]).unwrap();
         let running = vec![Session {
             name: "work".into(),
             running: true,
