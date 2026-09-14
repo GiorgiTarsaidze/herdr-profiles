@@ -136,6 +136,8 @@ mod tests {
         settings.profiles.push(Profile {
             name: "work".parse().unwrap(),
             label: None,
+            remote: None,
+            remote_session: None,
         });
         assert!(should_open_on_startup(&settings, &ProfileRef::Default));
         assert!(!should_open_on_startup(&settings, &work));
