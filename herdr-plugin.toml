@@ -1,6 +1,6 @@
 id = "herdr-profiles"
 name = "Profiles"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.8.0"
 description = "Chrome-style profiles for Herdr. Each profile is an isolated set of spaces (a Herdr named session) with a popup chooser."
 platforms = ["linux", "macos"]
