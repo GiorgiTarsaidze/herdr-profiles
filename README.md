@@ -14,8 +14,8 @@ Keep work, personal and study spaces apart, and switch between them from a popup
 A profile is a Herdr named session: its own spaces, agents and saved layout.
 A profile can also point at a Herdr server on another machine, opened with
 `herdr --remote`. This plugin lists your profiles in a popup and opens the one
-you pick in a new terminal window. When Herdr starts and you have at least one profile, the popup
-appears on its own, like Chrome's profile picker.
+you pick in a new terminal window. When Herdr starts and you have at least one
+profile, the popup appears on its own, like Chrome's profile picker.
 
 ## Install
 

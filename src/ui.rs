@@ -415,7 +415,11 @@ impl<'s, 'h> Chooser<'s, 'h> {
         let remote_session = if remote.is_empty() {
             None
         } else {
-            self.prompt(screen, "Remote session (empty for default):", "")?
+            let Some(session) = self.prompt(screen, "Remote session (empty for default):", "")?
+            else {
+                return Ok(());
+            };
+            Some(session)
         };
         match self.store.add(&name, None, Some(remote), remote_session) {
             Ok(()) => {
@@ -474,6 +478,7 @@ impl<'s, 'h> Chooser<'s, 'h> {
             },
         )? {
             match self.store.remove(&row.id) {
+                Ok(()) if row.remote.is_some() => self.info(format!("Forgot '{}'.", row.name())),
                 Ok(()) => self.info(format!("Deleted '{}'.", row.name())),
                 Err(err) => self.error(err.to_string()),
             }

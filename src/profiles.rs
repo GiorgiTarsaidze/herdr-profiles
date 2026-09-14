@@ -17,8 +17,10 @@ pub struct ProfileRow {
     pub label: String,
     pub running: bool,
     pub attached: bool,
-    pub session_dir: PathBuf,
-    pub socket_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_dir: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<PathBuf>,
     pub current: bool,
     pub protected: bool,
     pub spaces: usize,
@@ -110,10 +112,10 @@ impl<'a> ProfileStore<'a> {
         });
         let session_dir = session
             .and_then(|s| s.session_dir.clone())
-            .unwrap_or_else(|| self.herdr.session_dir(&id));
+            .or_else(|| self.herdr.session_dir(&id));
         let socket_path = session
             .and_then(|s| s.socket_path.clone())
-            .unwrap_or_else(|| session_dir.join("herdr.sock"));
+            .or_else(|| session_dir.as_ref().map(|dir| dir.join("herdr.sock")));
         let running = session.is_some_and(|s| s.running);
         let attached = attached.contains(&id.attach_key());
         let label = match &id {
@@ -132,21 +134,18 @@ impl<'a> ProfileStore<'a> {
             }),
             _ => None,
         };
-        // ponytail: no counts for remote profiles, that would mean an SSH round trip.
-        let with_counts = with_counts && remote.is_none();
-        let counts = match (with_counts, running) {
-            (false, _) => None,
-            (true, true) => herdr::live_counts(&socket_path),
-            (true, false) => None,
-        }
-        .unwrap_or_else(|| herdr::Counts {
-            spaces: if with_counts {
-                herdr::saved_space_count(&session_dir)
-            } else {
-                0
-            },
-            blocked: 0,
-        });
+        let counts = if with_counts {
+            socket_path
+                .as_deref()
+                .filter(|_| running)
+                .and_then(herdr::live_counts)
+                .unwrap_or_else(|| herdr::Counts {
+                    spaces: session_dir.as_deref().map_or(0, herdr::saved_space_count),
+                    blocked: 0,
+                })
+        } else {
+            herdr::Counts::default()
+        };
         ProfileRow {
             name: id.name().to_owned(),
             label,
@@ -205,7 +204,6 @@ impl<'a> ProfileStore<'a> {
     fn remove_with(&mut self, target: &ProfileRef, sessions: &[Session]) -> Result<()> {
         let name = match target {
             ProfileRef::Default => bail!("the default profile cannot be deleted"),
-            // Only forgets the profile; the host keeps its session.
             ProfileRef::Remote { name, .. } => name,
             ProfileRef::Named(name) => {
                 if sessions
@@ -214,7 +212,11 @@ impl<'a> ProfileStore<'a> {
                 {
                     bail!("profile '{name}' is running; stop it first");
                 }
-                if self.herdr.session_dir(target).is_dir() {
+                if self
+                    .herdr
+                    .session_dir(target)
+                    .is_some_and(|dir| dir.is_dir())
+                {
                     self.herdr.delete_session(name)?;
                 }
                 name
