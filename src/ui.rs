@@ -12,7 +12,7 @@ use crate::keybinding::{self, KeyCombo, Status};
 use crate::profiles::{ProfileRow, ProfileStore};
 use crate::theme::{PopupColors, Rgb, ThemeConfig};
 
-const HINT: &str = "enter open  n new  x stop  d delete  s hotkey  q close";
+const HINT: &str = "enter open  n new  e edit  x stop  d delete  s key  q close";
 const HEADER_ROWS: usize = 2;
 const FOOTER_ROWS: usize = 2;
 
@@ -20,6 +20,11 @@ pub fn run(store: &mut ProfileStore, start_with_setup: bool) -> Result<()> {
     let mut screen = Screen::enter()?;
     let mut chooser = Chooser::new(store);
     chooser.refresh(None);
+    if let Some(reason) = chooser.store.settings_error() {
+        chooser.error(format!(
+            "profiles.json is invalid ({reason}). Press e to fix it."
+        ));
+    }
     if start_with_setup {
         chooser.set_hotkey(&mut screen)?;
     }
@@ -385,6 +390,7 @@ impl<'s, 'h> Chooser<'s, 'h> {
             }
             Key::Char('s') => self.set_hotkey(screen)?,
             Key::Char('n') => self.create(screen)?,
+            Key::Char('e') => return self.edit_settings(),
             Key::Char('x') => self.stop_selected(screen)?,
             Key::Char('d') => self.delete_selected(screen)?,
             _ => {}
@@ -417,6 +423,18 @@ impl<'s, 'h> Chooser<'s, 'h> {
             Err(err) => self.error(err.to_string()),
         }
         Ok(())
+    }
+
+    /// Opens profiles.json in a new window and closes the popup, so the next
+    /// popup reads the edited file.
+    fn edit_settings(&mut self) -> Result<Flow> {
+        match self.store.edit() {
+            Ok(()) => Ok(Flow::Exit),
+            Err(err) => {
+                self.error(err.to_string());
+                Ok(Flow::Continue)
+            }
+        }
     }
 
     fn stop_selected(&mut self, screen: &mut Screen) -> Result<()> {

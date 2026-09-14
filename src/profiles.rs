@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::herdr::{self, Herdr, Session};
@@ -60,6 +60,48 @@ impl<'a> ProfileStore<'a> {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// Why profiles.json cannot be used, when it exists but does not parse.
+    pub fn settings_error(&self) -> Option<String> {
+        if !self.path.exists() {
+            return None;
+        }
+        Settings::read(&self.path)
+            .err()
+            .map(|err| err.root_cause().to_string())
+    }
+
+    /// Opens profiles.json in `$VISUAL`/`$EDITOR` in a new terminal window.
+    pub fn edit(&self) -> Result<()> {
+        if !self.path.exists() {
+            self.settings.save(&self.path)?;
+        }
+        let mut command = launcher::editor();
+        command.push(self.path.to_string_lossy().into_owned());
+        let env = herdr::env_map();
+        let argv = self
+            .launcher(&env)
+            .window_argv("herdr · profiles.json", command)
+            .with_context(|| self.no_terminal())?;
+        launcher::spawn_detached(&argv)
+    }
+
+    fn launcher<'e>(&'e self, env: &'e HashMap<String, String>) -> Launcher<'e> {
+        Launcher::new(
+            self.herdr.bin(),
+            self.settings.terminal.as_deref(),
+            env,
+            Platform::current(),
+            &launcher::is_on_path,
+        )
+    }
+
+    fn no_terminal(&self) -> String {
+        format!(
+            "no terminal emulator found; set \"terminal\" in {}",
+            self.path.display()
+        )
     }
 
     pub fn rows(&self, with_counts: bool) -> Vec<ProfileRow> {
@@ -158,7 +200,11 @@ impl<'a> ProfileStore<'a> {
             bail!("profile '{name}' already exists");
         }
         let label = label.filter(|l| !l.is_empty() && l != name.as_str());
-        self.settings.profiles.push(Profile { name, label });
+        self.settings.profiles.push(Profile {
+            name,
+            label,
+            env: Default::default(),
+        });
         self.settings.save(&self.path)
     }
 
@@ -204,19 +250,15 @@ impl<'a> ProfileStore<'a> {
             bail!("'{target}' is already open in another window");
         }
         let env = herdr::env_map();
-        let launcher = Launcher::new(
-            self.herdr.bin(),
-            self.settings.terminal.as_deref(),
-            &env,
-            Platform::current(),
-            &launcher::is_on_path,
-        );
-        let Some(argv) = launcher.argv(target) else {
-            bail!(
-                "no terminal emulator found; set \"terminal\" in {}",
-                self.path.display()
-            );
-        };
+        let mut launcher = self.launcher(&env);
+        if !self.settings.profile_env(target).is_empty() {
+            // Terminals do not reliably pass our environment on to the window
+            // (osascript, single-instance terminals, wt.exe from WSL), so the
+            // window runs us first and we set it there.
+            let exe = std::env::current_exe().context("locating herdr-profiles")?;
+            launcher = launcher.through_exec(&exe, &self.path, target);
+        }
+        let argv = launcher.argv(target).with_context(|| self.no_terminal())?;
         if dry_run {
             return Ok(argv);
         }

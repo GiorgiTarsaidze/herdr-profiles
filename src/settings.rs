@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -94,11 +95,31 @@ pub struct Profile {
     pub name: ProfileName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Extra environment for the profile's window, e.g. a separate Claude account.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 impl Profile {
     pub fn label(&self) -> &str {
         self.label.as_deref().unwrap_or(self.name.as_str())
+    }
+
+    /// `env` with a leading `~` expanded, since no shell sees these values.
+    pub fn window_env(&self) -> Vec<(String, String)> {
+        self.env
+            .iter()
+            .map(|(key, value)| (key.clone(), expand_home(value)))
+            .collect()
+    }
+}
+
+fn expand_home(value: &str) -> String {
+    match value.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{}{rest}", home_dir().display())
+        }
+        _ => value.to_owned(),
     }
 }
 
@@ -133,13 +154,24 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
-            .ok()
-            .and_then(|data| serde_json::from_slice(&data).ok())
-            .unwrap_or_default()
+        Self::read(path).unwrap_or_default()
     }
 
+    /// Like `load`, but reports a missing or broken file instead of hiding it.
+    pub fn read(path: &Path) -> Result<Self> {
+        let data = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        serde_json::from_slice(&data).with_context(|| format!("{} is invalid", path.display()))
+    }
+
+    /// Refuses to replace a file that does not parse: this struct would have
+    /// loaded as defaults from it, and saving would drop every profile.
     pub fn save(&self, path: &Path) -> Result<()> {
+        if path.exists() && Self::read(path).is_err() {
+            bail!(
+                "{} is invalid; fix it (e in the popup) before changing profiles",
+                path.display()
+            );
+        }
         let mut data = serde_json::to_vec_pretty(self)?;
         data.push(b'\n');
         write_atomically(path, &data)
@@ -147,6 +179,17 @@ impl Settings {
 
     pub fn profile(&self, name: &ProfileName) -> Option<&Profile> {
         self.profiles.iter().find(|p| &p.name == name)
+    }
+
+    /// The extra environment a profile's window runs with; empty for `default`.
+    pub fn profile_env(&self, target: &ProfileRef) -> Vec<(String, String)> {
+        match target {
+            ProfileRef::Default => Vec::new(),
+            ProfileRef::Named(name) => self
+                .profile(name)
+                .map(Profile::window_env)
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -229,6 +272,7 @@ mod tests {
         settings.profiles.push(Profile {
             name: "work".parse().unwrap(),
             label: Some("Work".into()),
+            env: BTreeMap::from([("CLAUDE_CODE_USE_VERTEX".into(), "1".into())]),
         });
         settings.save(&path).unwrap();
         let loaded = Settings::load(&path);
@@ -236,6 +280,28 @@ mod tests {
         assert!(loaded.chooser_on_launch);
         fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+        assert!(Settings::read(&path).is_err());
+        assert!(Settings::default().save(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn window_env_expands_home() {
+        let profile: Profile = serde_json::from_str(
+            r#"{"name":"vertex","env":{"A":"~/.claude-vertex","B":"~","C":"x~/y","D":"~bob"}}"#,
+        )
+        .unwrap();
+        let home = home_dir().display().to_string();
+        let values: Vec<String> = profile.window_env().into_iter().map(|(_, v)| v).collect();
+        assert_eq!(
+            values,
+            [
+                format!("{home}/.claude-vertex"),
+                home,
+                "x~/y".into(),
+                "~bob".into()
+            ]
+        );
     }
 
     #[test]

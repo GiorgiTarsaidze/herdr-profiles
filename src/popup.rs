@@ -136,6 +136,7 @@ mod tests {
         settings.profiles.push(Profile {
             name: "work".parse().unwrap(),
             label: None,
+            env: Default::default(),
         });
         assert!(should_open_on_startup(&settings, &ProfileRef::Default));
         assert!(!should_open_on_startup(&settings, &work));
