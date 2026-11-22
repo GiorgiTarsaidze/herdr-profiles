@@ -20,6 +20,11 @@ pub fn run(store: &mut ProfileStore, start_with_setup: bool) -> Result<()> {
     let mut screen = Screen::enter()?;
     let mut chooser = Chooser::new(store);
     chooser.refresh(None);
+    if let Some(reason) = chooser.store.settings_error() {
+        chooser.error(format!(
+            "profiles.json is invalid ({reason}). Fix it by hand."
+        ));
+    }
     if start_with_setup {
         chooser.set_hotkey(&mut screen)?;
     }

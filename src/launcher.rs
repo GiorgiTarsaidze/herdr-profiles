@@ -101,6 +101,7 @@ pub struct Launcher<'a> {
     env: &'a HashMap<String, String>,
     platform: Platform,
     installed: &'a dyn Fn(&str) -> bool,
+    exec_prefix: Vec<String>,
 }
 
 impl<'a> Launcher<'a> {
@@ -117,12 +118,32 @@ impl<'a> Launcher<'a> {
             env,
             platform,
             installed,
+            exec_prefix: Vec::new(),
         }
+    }
+
+    /// Runs Herdr through `<exe> exec --settings <file> <profile> --`, which
+    /// sets the profile's environment inside the new window. Terminals do not
+    /// reliably pass our environment on to the window (osascript,
+    /// single-instance terminals, wt.exe from WSL), so the window runs us first.
+    /// The settings path is explicit because the window does not get Herdr's
+    /// plugin variables.
+    pub fn through_exec(mut self, exe: &Path, settings: &Path, target: &ProfileRef) -> Self {
+        self.exec_prefix = vec![
+            exe.to_string_lossy().into_owned(),
+            "exec".to_owned(),
+            "--settings".to_owned(),
+            settings.to_string_lossy().into_owned(),
+            target.name().to_owned(),
+            "--".to_owned(),
+        ];
+        self
     }
 
     pub fn argv(&self, target: &ProfileRef) -> Option<Vec<String>> {
         let title = format!("herdr · {target}");
-        let mut herdr = vec![self.herdr_bin.to_string_lossy().into_owned()];
+        let mut herdr = self.exec_prefix.clone();
+        herdr.push(self.herdr_bin.to_string_lossy().into_owned());
         herdr.extend(target.session_args());
 
         if let Some(prefix) = self.terminal_override.filter(|prefix| !prefix.is_empty()) {
@@ -158,12 +179,41 @@ impl<'a> Launcher<'a> {
                 .is_some_and(|hint| self.env.get(hint).is_some_and(|v| !v.is_empty()))
                 && (self.installed)(terminal.binary)
         });
-        let terminal = hinted.or_else(|| {
-            TERMINALS
-                .iter()
-                .find(|terminal| (self.installed)(terminal.binary))
-        })?;
+        if let Some(terminal) = hinted {
+            return Some((terminal.argv)(title));
+        }
+        if let Some(argv) = self.windows_terminal(title) {
+            return Some(argv);
+        }
+        let terminal = TERMINALS
+            .iter()
+            .find(|terminal| (self.installed)(terminal.binary))?;
         Some((terminal.argv)(title))
+    }
+
+    /// Herdr inside WSL usually runs in Windows Terminal, which leaves no trace
+    /// in the Linux environment; open a tab there in the same distribution.
+    /// The fixed title stops the shell inside from renaming the tab, and the
+    /// login shell reads ~/.profile, which is where ~/.local/bin joins PATH.
+    fn windows_terminal(&self, title: &str) -> Option<Vec<String>> {
+        let distro = self.env.get("WSL_DISTRO_NAME").filter(|d| !d.is_empty())?;
+        (self.installed)("wt.exe").then(|| {
+            args(&[
+                "wt.exe",
+                "-w",
+                "0",
+                "new-tab",
+                "--title",
+                title,
+                "--suppressApplicationTitle",
+                "wsl.exe",
+                "-d",
+                distro,
+                "--shell-type",
+                "login",
+                "--",
+            ])
+        })
     }
 }
 
@@ -205,8 +255,18 @@ const PARENT_TERMINAL_VARS: &[&str] = &[
     "WINDOWID",
 ];
 
-pub fn window_env() -> impl Iterator<Item = (OsString, OsString)> {
-    Herdr::clean_env().filter(|(key, _)| !PARENT_TERMINAL_VARS.iter().any(|var| key == var))
+/// The environment a new window starts with. Besides Herdr's and the parent
+/// terminal's variables, it drops every `profile_env` value: the popup inherits
+/// them from the profile it runs in, and they must not reach another profile.
+pub fn window_env(
+    profile_env: &[(String, String)],
+) -> impl Iterator<Item = (OsString, OsString)> + '_ {
+    Herdr::clean_env().filter(move |(key, value)| {
+        !PARENT_TERMINAL_VARS.iter().any(|var| key == var)
+            && !profile_env
+                .iter()
+                .any(|(name, set)| key == name.as_str() && value == set.as_str())
+    })
 }
 
 pub fn is_on_path(binary: &str) -> bool {
@@ -214,15 +274,25 @@ pub fn is_on_path(binary: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
 }
 
+/// Replaces this process with `command`, adding `env` to the environment.
+/// Only returns on failure.
+pub fn exec(command: &[String], env: Vec<(String, String)>) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let (program, rest) = command.split_first().context("empty command")?;
+    let err = Command::new(program).args(rest).envs(env).exec();
+    Err(err).with_context(|| format!("starting {program}"))
+}
+
 /// Starts the window detached from the popup, so closing the popup never kills it.
-pub fn spawn_detached(argv: &[String]) -> Result<()> {
+pub fn spawn_detached(argv: &[String], profile_env: &[(String, String)]) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let (program, rest) = argv.split_first().context("empty launch command")?;
     Command::new(program)
         .args(rest)
         .env_clear()
-        .envs(window_env())
+        .envs(window_env(profile_env))
         .current_dir(crate::settings::home_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -295,15 +365,21 @@ mod tests {
     }
 
     #[test]
-    fn window_env_drops_parent_terminal_identity() {
+    fn window_env_drops_parent_terminal_and_profile_variables() {
         std::env::set_var("GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/stale");
         std::env::set_var("HERDR_PROBE", "1");
-        let keys: Vec<OsString> = window_env().map(|(key, _)| key).collect();
+        std::env::set_var("PROFILE_ENV_PROBE", "vertex");
+        let vertex = [("PROFILE_ENV_PROBE".to_owned(), "vertex".to_owned())];
+        let keys: Vec<OsString> = window_env(&vertex).map(|(key, _)| key).collect();
         assert!(!keys.contains(&OsString::from("GNOME_TERMINAL_SCREEN")));
         assert!(!keys.contains(&OsString::from("HERDR_PROBE")));
+        assert!(!keys.contains(&OsString::from("PROFILE_ENV_PROBE")));
         assert!(keys.contains(&OsString::from("PATH")));
+        let router = [("PROFILE_ENV_PROBE".to_owned(), "router".to_owned())];
+        assert!(window_env(&router).any(|(key, _)| key == "PROFILE_ENV_PROBE"));
         std::env::remove_var("GNOME_TERMINAL_SCREEN");
         std::env::remove_var("HERDR_PROBE");
+        std::env::remove_var("PROFILE_ENV_PROBE");
     }
 
     #[test]
@@ -339,6 +415,82 @@ mod tests {
         assert_eq!(
             argv[2],
             "tell application \"Terminal\" to do script \"/opt/herdr --session work\""
+        );
+    }
+
+    #[test]
+    fn wsl_opens_a_windows_terminal_tab() {
+        let wsl = env(&[("WSL_DISTRO_NAME", "Ubuntu")]);
+        let has = installed(&["wt.exe", "foot"]);
+        let launcher = Launcher::new(Path::new("/opt/herdr"), None, &wsl, Platform::Linux, &has);
+        assert_eq!(
+            launcher.argv(&work()).unwrap(),
+            [
+                "wt.exe",
+                "-w",
+                "0",
+                "new-tab",
+                "--title",
+                "herdr · work",
+                "--suppressApplicationTitle",
+                "wsl.exe",
+                "-d",
+                "Ubuntu",
+                "--shell-type",
+                "login",
+                "--",
+                "/opt/herdr",
+                "--session",
+                "work"
+            ]
+        );
+        let in_foot = env(&[("WSL_DISTRO_NAME", "Ubuntu"), ("FOOT_PID", "1")]);
+        let launcher = Launcher::new(
+            Path::new("/opt/herdr"),
+            None,
+            &in_foot,
+            Platform::Linux,
+            &has,
+        );
+        assert_eq!(launcher.argv(&work()).unwrap()[0], "foot");
+        let outside_wsl = env(&[]);
+        let launcher = Launcher::new(
+            Path::new("/opt/herdr"),
+            None,
+            &outside_wsl,
+            Platform::Linux,
+            &has,
+        );
+        assert_eq!(launcher.argv(&work()).unwrap()[0], "foot");
+    }
+
+    #[test]
+    fn profile_env_runs_through_exec() {
+        let env = env(&[]);
+        let has = installed(&["xterm"]);
+        let launcher = Launcher::new(Path::new("/opt/herdr"), None, &env, Platform::Linux, &has)
+            .through_exec(
+                Path::new("/opt/herdr-profiles"),
+                Path::new("/cfg/profiles.json"),
+                &work(),
+            );
+        assert_eq!(
+            launcher.argv(&work()).unwrap(),
+            [
+                "xterm",
+                "-T",
+                "herdr · work",
+                "-e",
+                "/opt/herdr-profiles",
+                "exec",
+                "--settings",
+                "/cfg/profiles.json",
+                "work",
+                "--",
+                "/opt/herdr",
+                "--session",
+                "work"
+            ]
         );
     }
 }

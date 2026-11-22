@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::herdr::{self, Herdr, Session};
@@ -65,6 +65,16 @@ impl<'a> ProfileStore<'a> {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// Why profiles.json cannot be used, when it exists but does not parse.
+    pub fn settings_error(&self) -> Option<String> {
+        if !self.path.exists() {
+            return None;
+        }
+        Settings::read(&self.path)
+            .err()
+            .map(|err| err.root_cause().to_string())
     }
 
     pub fn rows(&self, with_counts: bool) -> Vec<ProfileRow> {
@@ -193,6 +203,7 @@ impl<'a> ProfileStore<'a> {
             label,
             remote,
             remote_session,
+            env: Default::default(),
         });
         self.settings.save(&self.path)
     }
@@ -250,13 +261,17 @@ impl<'a> ProfileStore<'a> {
             bail!("'{target}' is already open in another window");
         }
         let env = herdr::env_map();
-        let launcher = Launcher::new(
+        let mut launcher = Launcher::new(
             self.herdr.bin(),
             self.settings.terminal.as_deref(),
             &env,
             Platform::current(),
             &launcher::is_on_path,
         );
+        if !self.settings.profile_env(target).is_empty() {
+            let exe = std::env::current_exe().context("locating herdr-profiles")?;
+            launcher = launcher.through_exec(&exe, &self.path, target);
+        }
         let Some(argv) = launcher.argv(target) else {
             bail!(
                 "no terminal emulator found; set \"terminal\" in {}",
@@ -266,7 +281,7 @@ impl<'a> ProfileStore<'a> {
         if dry_run {
             return Ok(argv);
         }
-        launcher::spawn_detached(&argv)?;
+        launcher::spawn_detached(&argv, &self.settings.all_profile_env())?;
         self.settings.last = Some(target.name().to_owned());
         self.settings.save(&self.path)?;
         Ok(argv)
