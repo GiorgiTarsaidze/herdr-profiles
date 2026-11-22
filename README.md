@@ -12,9 +12,10 @@ Keep work, personal and study spaces apart, and switch between them from a popup
 ## What it does
 
 A profile is a Herdr named session: its own spaces, agents and saved layout.
-This plugin lists your profiles in a popup and opens the one you pick in a new
-terminal window. When Herdr starts and you have at least one profile, the popup
-appears on its own, like Chrome's profile picker.
+A profile can also point at a Herdr server on another machine, opened with
+`herdr --remote`. This plugin lists your profiles in a popup and opens the one
+you pick in a new terminal window. When Herdr starts and you have at least one
+profile, the popup appears on its own, like Chrome's profile picker.
 
 ## Install
 
@@ -34,7 +35,7 @@ Press `ctrl+b`, then `a`.
 | ------------- | --------------------------------------------- |
 | `↑` `↓`       | move                                          |
 | `enter`       | open the profile in a new window              |
-| `n`           | new profile                                   |
+| `n`           | new profile (leave the SSH target empty for a local one) |
 | `e`           | edit `profiles.json` in `$EDITOR`, new window |
 | `s`           | change the hotkey                             |
 | `x`           | stop a running profile                        |
@@ -43,6 +44,14 @@ Press `ctrl+b`, then `a`.
 
 `default` is Herdr's own session. It is always listed and cannot be deleted.
 A profile that already has a window open cannot be opened twice.
+
+Remote profiles show their `host/session` instead of a space count, since that
+would need an SSH round trip. `x` does nothing for them and `d` only forgets the
+profile; the host keeps its session. From the shell:
+
+```sh
+herdr-profiles add box "Build box" --remote workbox --remote-session agents
+```
 
 ## Settings
 
@@ -53,17 +62,25 @@ the popup to open it.
 {
   "chooser_on_launch": true,
   "terminal": null,
-  "profiles": [{ "name": "work", "label": "Work" }]
+  "profiles": [
+    { "name": "work", "label": "Work" },
+    { "name": "box", "label": "Build box", "remote": "workbox", "remote_session": "agents" }
+  ]
 }
 ```
 
-| Field               | Meaning                                                        |
-| ------------------- | -------------------------------------------------------------- |
-| `chooser_on_launch` | show the popup when Herdr starts                               |
-| `terminal`          | command that opens new windows; `null` picks one (see below)   |
-| `profiles[].name`   | session name: ASCII letters, digits, `.`, `_`, `-`             |
-| `profiles[].label`  | optional display name                                          |
-| `profiles[].env`    | optional environment for the profile, see below                |
+| Field                       | Meaning                                                      |
+| --------------------------- | ------------------------------------------------------------ |
+| `chooser_on_launch`         | show the popup when Herdr starts                             |
+| `terminal`                  | command that opens new windows; `null` picks one (see below) |
+| `profiles[].name`           | session name: ASCII letters, digits, `.`, `_`, `-`           |
+| `profiles[].label`          | optional display name                                        |
+| `profiles[].remote`         | optional SSH target, for a profile on another machine        |
+| `profiles[].remote_session` | optional named session on that host                          |
+| `profiles[].env`            | optional environment for the profile, see below              |
+
+`remote` is any `ssh` target (`workbox`, `ssh://you@server:2222`);
+`remote_session` picks a named session on that host and is optional.
 
 By default new windows open in the terminal Herdr runs in; inside WSL that
 is a new Windows Terminal tab in the same distribution. To pick one, set
@@ -125,6 +142,8 @@ account per profile.
 - `default` is Herdr's own session and keeps the environment Herdr was
   started with.
 - Deleting a profile with `d` removes its `env` too.
+- Remote profiles ignore `env`: it would only reach the local client, not
+  the remote server.
 
 The window starts through `herdr-profiles exec`, which sets the environment
 before running Herdr, so it works with any terminal.

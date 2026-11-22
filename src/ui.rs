@@ -415,7 +415,19 @@ impl<'s, 'h> Chooser<'s, 'h> {
         let Some(name) = self.prompt(screen, "New profile name:", "")? else {
             return Ok(());
         };
-        match self.store.add(&name, None) {
+        let Some(remote) = self.prompt(screen, "SSH target (empty for local):", "")? else {
+            return Ok(());
+        };
+        let remote_session = if remote.is_empty() {
+            None
+        } else {
+            let Some(session) = self.prompt(screen, "Remote session (empty for default):", "")?
+            else {
+                return Ok(());
+            };
+            Some(session)
+        };
+        match self.store.add(&name, None, Some(remote), remote_session) {
             Ok(()) => {
                 self.info(format!("Created '{name}'. Press enter to open it."));
                 self.refresh(Some(&name));
@@ -443,6 +455,8 @@ impl<'s, 'h> Chooser<'s, 'h> {
         };
         if row.protected {
             self.error("The default profile is Herdr itself; stop it with `herdr server stop`.");
+        } else if let Some(remote) = &row.remote {
+            self.error(format!("'{remote}' is on another host; stop it there."));
         } else if !row.running {
             self.error(format!("'{}' is not running.", row.name()));
         } else if row.current {
@@ -472,13 +486,17 @@ impl<'s, 'h> Chooser<'s, 'h> {
             self.error(format!("Stop '{}' before deleting it.", row.name()));
         } else if self.confirm(
             screen,
-            &format!(
-                "Delete '{}' and its {} saved spaces?",
-                row.name(),
-                row.spaces
-            ),
+            &match &row.remote {
+                Some(remote) => format!("Forget '{}' ({remote})? The host keeps it.", row.name()),
+                None => format!(
+                    "Delete '{}' and its {} saved spaces?",
+                    row.name(),
+                    row.spaces
+                ),
+            },
         )? {
             match self.store.remove(&row.id) {
+                Ok(()) if row.remote.is_some() => self.info(format!("Forgot '{}'.", row.name())),
                 Ok(()) => self.info(format!("Deleted '{}'.", row.name())),
                 Err(err) => self.error(err.to_string()),
             }
@@ -555,11 +573,14 @@ fn row_span(row: &ProfileRow, selected: bool, width: usize) -> Span {
     } else {
         format!("{} ({})", row.label, row.name())
     };
-    let spaces = format!(
-        "{} space{}",
-        row.spaces,
-        if row.spaces == 1 { "" } else { "s" }
-    );
+    let spaces = match &row.remote {
+        Some(remote) => remote.clone(),
+        None => format!(
+            "{} space{}",
+            row.spaces,
+            if row.spaces == 1 { "" } else { "s" }
+        ),
+    };
     let blocked = if row.blocked > 0 {
         format!("  ● {} blocked", row.blocked)
     } else {

@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::settings::{self, ProfileName, ProfileRef, DEFAULT_SESSION};
+use crate::settings::{self, remote_attach_key, ProfileName, ProfileRef, DEFAULT_SESSION};
 use crate::socket;
 
 /// The Herdr installation this plugin talks to: its binary and config directory.
@@ -61,10 +61,11 @@ impl Herdr {
         self.config_dir.join("config.toml")
     }
 
-    pub fn session_dir(&self, profile: &ProfileRef) -> PathBuf {
+    pub fn session_dir(&self, profile: &ProfileRef) -> Option<PathBuf> {
         match profile {
-            ProfileRef::Default => self.config_dir.clone(),
-            ProfileRef::Named(name) => self.config_dir.join("sessions").join(name.as_str()),
+            ProfileRef::Default => Some(self.config_dir.clone()),
+            ProfileRef::Named(name) => Some(self.config_dir.join("sessions").join(name.as_str())),
+            ProfileRef::Remote { .. } => None,
         }
     }
 
@@ -138,8 +139,9 @@ impl Herdr {
     }
 }
 
-/// Sessions with a Herdr client attached, meaning a window is showing them.
-/// Clients are `herdr`, `herdr --session <name>` or `herdr session attach <name>`
+/// Sessions with a Herdr client attached, meaning a window is showing them,
+/// keyed as `ProfileRef::attach_key`. Clients are `herdr`, `herdr --session <name>`,
+/// `herdr session attach <name>` or `herdr --remote <target> [--session <name>]`
 /// processes that own a terminal; servers run without one.
 pub fn attached_sessions() -> HashSet<String> {
     Command::new("ps")
@@ -166,12 +168,34 @@ fn attached_session_of(line: &str) -> Option<String> {
         return None;
     }
     let args: Vec<&str> = fields.collect();
-    match args.as_slice() {
-        [] => Some(DEFAULT_SESSION.to_owned()),
-        ["--session", name] | ["session", "attach", name] => Some((*name).to_owned()),
-        [flag] => flag.strip_prefix("--session=").map(str::to_owned),
-        _ => None,
+    if let ["session", "attach", name] = args.as_slice() {
+        return Some((*name).to_owned());
     }
+    let (mut remote, mut session) = (None, None);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg {
+            "--remote" => remote = args.next(),
+            "--session" => session = args.next(),
+            "--remote-keybindings" => {
+                args.next();
+            }
+            "--handoff" => {}
+            _ => match (
+                arg.strip_prefix("--remote="),
+                arg.strip_prefix("--session="),
+            ) {
+                (Some(target), _) => remote = Some(target),
+                (_, Some(name)) => session = Some(name),
+                _ => return None,
+            },
+        }
+    }
+    Some(match (remote, session) {
+        (Some(target), session) => remote_attach_key(target, session),
+        (None, Some(name)) => name.to_owned(),
+        (None, None) => DEFAULT_SESSION.to_owned(),
+    })
 }
 
 pub fn saved_space_count(session_dir: &Path) -> usize {
@@ -231,11 +255,25 @@ pts/5    /usr/bin/herdr session attach study
 pts/6    herdr --session=work
 pts/7    /usr/bin/herdr plugin list
 ttys001  /usr/local/bin/herdr --session mac
+pts/8    herdr --remote workbox
+pts/9    herdr --remote=ssh://me@box:22 --session agents --remote-keybindings server --handoff
+pts/10   herdr --remote workbox --unknown-flag
 ";
         let attached = parse_attached_sessions(listing);
         let mut names: Vec<&str> = attached.iter().map(String::as_str).collect();
         names.sort_unstable();
-        assert_eq!(names, ["default", "mac", "personal", "study", "work"]);
+        assert_eq!(
+            names,
+            [
+                "default",
+                "mac",
+                "personal",
+                "ssh://me@box:22#agents",
+                "study",
+                "work",
+                "workbox#default"
+            ]
+        );
     }
 
     #[test]
@@ -258,13 +296,19 @@ ttys001  /usr/local/bin/herdr --session mac
         };
         assert_eq!(
             herdr.session_dir(&ProfileRef::Default),
-            PathBuf::from("/cfg/herdr")
+            Some(PathBuf::from("/cfg/herdr"))
         );
         let work = ProfileRef::parse("work").unwrap();
         assert_eq!(
             herdr.session_dir(&work),
-            PathBuf::from("/cfg/herdr/sessions/work")
+            Some(PathBuf::from("/cfg/herdr/sessions/work"))
         );
         assert_eq!(herdr.config_path(), PathBuf::from("/cfg/herdr/config.toml"));
+        let remote = ProfileRef::Remote {
+            name: "box".parse().unwrap(),
+            target: "workbox".into(),
+            session: None,
+        };
+        assert_eq!(herdr.session_dir(&remote), None);
     }
 }

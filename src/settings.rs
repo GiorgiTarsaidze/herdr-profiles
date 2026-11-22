@@ -49,14 +49,21 @@ impl fmt::Display for ProfileName {
     }
 }
 
-/// Either Herdr's default session or a named one.
+/// Herdr's default session, a local named one, or a session on an SSH host.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ProfileRef {
     Default,
     Named(ProfileName),
+    Remote {
+        name: ProfileName,
+        target: String,
+        session: Option<String>,
+    },
 }
 
 impl ProfileRef {
+    /// Parses a local profile name. Remote profiles need their settings, see
+    /// `ProfileStore::resolve`.
     pub fn parse(name: &str) -> Result<Self> {
         if name == DEFAULT_SESSION {
             Ok(Self::Default)
@@ -68,7 +75,7 @@ impl ProfileRef {
     pub fn name(&self) -> &str {
         match self {
             Self::Default => DEFAULT_SESSION,
-            Self::Named(name) => name.as_str(),
+            Self::Named(name) | Self::Remote { name, .. } => name.as_str(),
         }
     }
 
@@ -76,12 +83,36 @@ impl ProfileRef {
         matches!(self, Self::Default)
     }
 
+    /// What an attached `herdr` client for this profile looks like, see
+    /// `herdr::attached_sessions`.
+    pub fn attach_key(&self) -> String {
+        match self {
+            Self::Remote {
+                target, session, ..
+            } => remote_attach_key(target, session.as_deref()),
+            _ => self.name().to_owned(),
+        }
+    }
+
     pub fn session_args(&self) -> Vec<String> {
         match self {
             Self::Default => Vec::new(),
             Self::Named(name) => vec!["--session".to_owned(), name.to_string()],
+            Self::Remote {
+                target, session, ..
+            } => {
+                let mut args = vec!["--remote".to_owned(), target.clone()];
+                if let Some(session) = session {
+                    args.extend(["--session".to_owned(), session.clone()]);
+                }
+                args
+            }
         }
     }
+}
+
+pub fn remote_attach_key(target: &str, session: Option<&str>) -> String {
+    format!("{target}#{}", session.unwrap_or(DEFAULT_SESSION))
 }
 
 impl fmt::Display for ProfileRef {
@@ -95,6 +126,12 @@ pub struct Profile {
     pub name: ProfileName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// SSH target for `herdr --remote`; absent for local profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// Named session on the remote host; absent means its default session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<String>,
     /// Extra environment for the profile's window, e.g. a separate Claude account.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
@@ -103,6 +140,17 @@ pub struct Profile {
 impl Profile {
     pub fn label(&self) -> &str {
         self.label.as_deref().unwrap_or(self.name.as_str())
+    }
+
+    pub fn to_ref(&self) -> ProfileRef {
+        match &self.remote {
+            Some(target) => ProfileRef::Remote {
+                name: self.name.clone(),
+                target: target.clone(),
+                session: self.remote_session.clone(),
+            },
+            None => ProfileRef::Named(self.name.clone()),
+        }
     }
 
     /// `env` with a leading `~` expanded, since no shell sees these values.
@@ -181,10 +229,11 @@ impl Settings {
         self.profiles.iter().find(|p| &p.name == name)
     }
 
-    /// The extra environment a profile's window runs with; empty for `default`.
+    /// The extra environment a profile's window runs with; empty for `default`
+    /// and remote profiles, whose server never sees the local environment.
     pub fn profile_env(&self, target: &ProfileRef) -> Vec<(String, String)> {
         match target {
-            ProfileRef::Default => Vec::new(),
+            ProfileRef::Default | ProfileRef::Remote { .. } => Vec::new(),
             ProfileRef::Named(name) => self
                 .profile(name)
                 .map(Profile::window_env)
@@ -265,6 +314,31 @@ mod tests {
     }
 
     #[test]
+    fn remote_profile_args_and_attach_key() {
+        let profile = Profile {
+            name: "box".parse().unwrap(),
+            label: None,
+            remote: Some("workbox".into()),
+            remote_session: Some("agents".into()),
+            env: Default::default(),
+        };
+        let remote = profile.to_ref();
+        assert_eq!(remote.name(), "box");
+        assert_eq!(
+            remote.session_args(),
+            ["--remote", "workbox", "--session", "agents"]
+        );
+        assert_eq!(remote.attach_key(), "workbox#agents");
+        let plain = Profile {
+            remote_session: None,
+            ..profile
+        }
+        .to_ref();
+        assert_eq!(plain.session_args(), ["--remote", "workbox"]);
+        assert_eq!(plain.attach_key(), "workbox#default");
+    }
+
+    #[test]
     fn settings_roundtrip_and_corrupt_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("profiles.json");
@@ -272,6 +346,8 @@ mod tests {
         settings.profiles.push(Profile {
             name: "work".parse().unwrap(),
             label: Some("Work".into()),
+            remote: None,
+            remote_session: None,
             env: BTreeMap::from([("CLAUDE_CODE_USE_VERTEX".into(), "1".into())]),
         });
         settings.save(&path).unwrap();
