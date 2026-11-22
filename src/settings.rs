@@ -216,7 +216,7 @@ impl Settings {
     pub fn save(&self, path: &Path) -> Result<()> {
         if path.exists() && Self::read(path).is_err() {
             bail!(
-                "{} is invalid; fix it (e in the popup) before changing profiles",
+                "{} is invalid; fix it before changing profiles",
                 path.display()
             );
         }
@@ -239,6 +239,15 @@ impl Settings {
                 .map(Profile::window_env)
                 .unwrap_or_default(),
         }
+    }
+
+    /// Every variable a local profile sets, with its value.
+    pub fn all_profile_env(&self) -> Vec<(String, String)> {
+        self.profiles
+            .iter()
+            .filter(|p| p.remote.is_none())
+            .flat_map(Profile::window_env)
+            .collect()
     }
 }
 

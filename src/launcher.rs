@@ -123,8 +123,11 @@ impl<'a> Launcher<'a> {
     }
 
     /// Runs Herdr through `<exe> exec --settings <file> <profile> --`, which
-    /// sets the profile's environment inside the new window. The settings path
-    /// is explicit because the window does not get Herdr's plugin variables.
+    /// sets the profile's environment inside the new window. Terminals do not
+    /// reliably pass our environment on to the window (osascript,
+    /// single-instance terminals, wt.exe from WSL), so the window runs us first.
+    /// The settings path is explicit because the window does not get Herdr's
+    /// plugin variables.
     pub fn through_exec(mut self, exe: &Path, settings: &Path, target: &ProfileRef) -> Self {
         self.exec_prefix = vec![
             exe.to_string_lossy().into_owned(),
@@ -138,27 +141,24 @@ impl<'a> Launcher<'a> {
     }
 
     pub fn argv(&self, target: &ProfileRef) -> Option<Vec<String>> {
+        let title = format!("herdr · {target}");
         let mut herdr = self.exec_prefix.clone();
         herdr.push(self.herdr_bin.to_string_lossy().into_owned());
         herdr.extend(target.session_args());
-        self.window_argv(&format!("herdr · {target}"), herdr)
-    }
 
-    /// Wraps `command` so it runs in a new terminal window titled `title`.
-    pub fn window_argv(&self, title: &str, command: Vec<String>) -> Option<Vec<String>> {
         if let Some(prefix) = self.terminal_override.filter(|prefix| !prefix.is_empty()) {
             let mut argv: Vec<String> = prefix
                 .iter()
-                .map(|part| part.replace("{title}", title))
+                .map(|part| part.replace("{title}", &title))
                 .collect();
-            argv.extend(command);
+            argv.extend(herdr);
             return Some(argv);
         }
         match self.platform {
-            Platform::MacOs => Some(macos_argv(&command, self.macos_app())),
+            Platform::MacOs => Some(macos_argv(&herdr, self.macos_app())),
             Platform::Linux => {
-                let mut argv = self.detect_terminal(title)?;
-                argv.extend(command);
+                let mut argv = self.detect_terminal(&title)?;
+                argv.extend(herdr);
                 Some(argv)
             }
         }
@@ -217,20 +217,6 @@ impl<'a> Launcher<'a> {
     }
 }
 
-/// `$VISUAL`, then `$EDITOR`, then nano or vi, as an argv prefix.
-// ponytail: the variable is split on whitespace, no shell quoting support.
-pub fn editor() -> Vec<String> {
-    let editor = ["VISUAL", "EDITOR"]
-        .iter()
-        .filter_map(|var| std::env::var(var).ok())
-        .find(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            let fallback = if is_on_path("nano") { "nano" } else { "vi" };
-            fallback.to_owned()
-        });
-    editor.split_whitespace().map(str::to_owned).collect()
-}
-
 fn macos_argv(command: &[String], app: &str) -> Vec<String> {
     let script = command.join(" ").replace('"', "\\\"");
     vec![
@@ -269,8 +255,18 @@ const PARENT_TERMINAL_VARS: &[&str] = &[
     "WINDOWID",
 ];
 
-pub fn window_env() -> impl Iterator<Item = (OsString, OsString)> {
-    Herdr::clean_env().filter(|(key, _)| !PARENT_TERMINAL_VARS.iter().any(|var| key == var))
+/// The environment a new window starts with. Besides Herdr's and the parent
+/// terminal's variables, it drops every `profile_env` value: the popup inherits
+/// them from the profile it runs in, and they must not reach another profile.
+pub fn window_env(
+    profile_env: &[(String, String)],
+) -> impl Iterator<Item = (OsString, OsString)> + '_ {
+    Herdr::clean_env().filter(move |(key, value)| {
+        !PARENT_TERMINAL_VARS.iter().any(|var| key == var)
+            && !profile_env
+                .iter()
+                .any(|(name, set)| key == name.as_str() && value == set.as_str())
+    })
 }
 
 pub fn is_on_path(binary: &str) -> bool {
@@ -289,14 +285,14 @@ pub fn exec(command: &[String], env: Vec<(String, String)>) -> Result<()> {
 }
 
 /// Starts the window detached from the popup, so closing the popup never kills it.
-pub fn spawn_detached(argv: &[String]) -> Result<()> {
+pub fn spawn_detached(argv: &[String], profile_env: &[(String, String)]) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let (program, rest) = argv.split_first().context("empty launch command")?;
     Command::new(program)
         .args(rest)
         .env_clear()
-        .envs(window_env())
+        .envs(window_env(profile_env))
         .current_dir(crate::settings::home_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -369,15 +365,21 @@ mod tests {
     }
 
     #[test]
-    fn window_env_drops_parent_terminal_identity() {
+    fn window_env_drops_parent_terminal_and_profile_variables() {
         std::env::set_var("GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/stale");
         std::env::set_var("HERDR_PROBE", "1");
-        let keys: Vec<OsString> = window_env().map(|(key, _)| key).collect();
+        std::env::set_var("PROFILE_ENV_PROBE", "vertex");
+        let vertex = [("PROFILE_ENV_PROBE".to_owned(), "vertex".to_owned())];
+        let keys: Vec<OsString> = window_env(&vertex).map(|(key, _)| key).collect();
         assert!(!keys.contains(&OsString::from("GNOME_TERMINAL_SCREEN")));
         assert!(!keys.contains(&OsString::from("HERDR_PROBE")));
+        assert!(!keys.contains(&OsString::from("PROFILE_ENV_PROBE")));
         assert!(keys.contains(&OsString::from("PATH")));
+        let router = [("PROFILE_ENV_PROBE".to_owned(), "router".to_owned())];
+        assert!(window_env(&router).any(|(key, _)| key == "PROFILE_ENV_PROBE"));
         std::env::remove_var("GNOME_TERMINAL_SCREEN");
         std::env::remove_var("HERDR_PROBE");
+        std::env::remove_var("PROFILE_ENV_PROBE");
     }
 
     #[test]

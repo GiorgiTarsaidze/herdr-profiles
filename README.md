@@ -36,7 +36,6 @@ Press `ctrl+b`, then `a`.
 | `↑` `↓`       | move                                          |
 | `enter`       | open the profile in a new window              |
 | `n`           | new profile (leave the SSH target empty for a local one) |
-| `e`           | edit `profiles.json` in `$EDITOR`, new window |
 | `s`           | change the hotkey                             |
 | `x`           | stop a running profile                        |
 | `d`           | delete a stopped profile                      |
@@ -55,8 +54,7 @@ herdr-profiles add box "Build box" --remote workbox --remote-session agents
 
 ## Settings
 
-`~/.config/herdr/plugins/config/herdr-profiles/profiles.json` — press `e` in
-the popup to open it.
+`~/.config/herdr/plugins/config/herdr-profiles/profiles.json`
 
 ```json
 {
@@ -97,7 +95,7 @@ window: shells, agents, tools. The typical use is a separate Claude Code
 account per profile.
 
 1. Create the profile with `n` in the popup.
-2. Press `e` and add an `env` object to it.
+2. Add an `env` object to it in `profiles.json`.
 3. If the profile is running, stop it with `x`: the environment is read
    when its session starts.
 4. Open it with `enter` and check, e.g. `echo $CLAUDE_CONFIG_DIR`.
